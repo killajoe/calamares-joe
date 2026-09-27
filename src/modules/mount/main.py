@@ -51,7 +51,7 @@ def disk_name_for_partition(partition):
     """
     name = os.path.basename(partition["device"])
 
-    if name.startswith("/dev/mmcblk") or name.startswith("/dev/nvme"):
+    if name.startswith("mmcblk") or name.startswith("nvme"):
         return re.sub("p[0-9]+$", "", name)
 
     return re.sub("[0-9]+$", "", name)
@@ -243,18 +243,16 @@ def mount_partition(root_mount_point, partition, partitions, mount_options, moun
 
     # Ensure that the created directory has the correct SELinux context on
     # SELinux-enabled systems.
-    set_selinux_context = libcalamares.job.configuration.get("setSELinux", True)
 
     os.makedirs(mount_point, exist_ok=True)
 
-    if set_selinux_context:
-        try:
-            subprocess.call(['chcon', '--reference=' + raw_mount_point, mount_point])
-        except FileNotFoundError as e:
-            libcalamares.utils.warning(str(e))
-        except OSError:
-            libcalamares.utils.error("Cannot run 'chcon' normally.")
-            raise
+    try:
+        subprocess.call(['chcon', '--reference=' + raw_mount_point, mount_point])
+    except FileNotFoundError as e:
+        libcalamares.utils.warning(str(e))
+    except OSError:
+        libcalamares.utils.error("Cannot run 'chcon' normally.")
+        raise
 
     fstype = partition.get("fs", "").lower()
     if fstype == "unformatted":

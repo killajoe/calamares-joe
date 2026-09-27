@@ -87,8 +87,6 @@ public:
 
     int lastSelectedDeviceIndex();
     void setLastSelectedDeviceIndex( int index );
-    int efiIndex();
-    void reset();
 
 signals:
     void nextStatusChanged( bool );
@@ -113,7 +111,6 @@ private:
     bool calculateNextEnabled() const;
     void updateNextEnabled();
     void setupChoices();
-    bool isNewEfiSelected() const;
     void checkInstallChoiceRadioButton( Config::InstallChoice choice );  ///< Sets the chosen button to "on"
     /** @brief Create a panel with "boot loader location:"
      *
@@ -135,8 +132,6 @@ private:
     OsproberEntryList getOsproberEntriesForDevice( Device* device ) const;
     void doAlongsideApply();
     void setupEfiSystemPartitionSelector();
-
-    void onEficomboTextChanged(const QString &text);
 
     // Translations support
     void updateSwapChoicesTr();
@@ -178,14 +173,9 @@ private:
     QString m_osproberOneEntryName;
 
     bool m_enableEncryptionWidget = false;
+    bool m_preCheckActivated = false;
 
     QMutex m_coreMutex;
-
-    int m_efiNewIndex = -1;
-
-    QString m_bootLoader;
-
-    bool m_inOnReplace = false;
 };
 
 #endif  // CHOICEPAGE_H

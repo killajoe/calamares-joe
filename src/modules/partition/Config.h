@@ -38,6 +38,10 @@ class Config : public QObject
     Q_PROPERTY( bool preCheckEncryption READ preCheckEncryption CONSTANT FINAL )
     Q_PROPERTY( bool showNotEncryptedBootMessage READ showNotEncryptedBootMessage CONSTANT FINAL )
 
+    Q_PROPERTY( bool lvmEnabled READ isLVMEnabled CONSTANT FINAL )
+
+    Q_PROPERTY( QStringList essentialMounts READ essentialMounts CONSTANT FINAL )
+
 public:
     Config( QObject* parent );
     ~Config() override = default;
@@ -68,6 +72,7 @@ public:
 
     using EraseFsTypesSet = QStringList;
 
+    /** @brief Choice of LUKS disk encryption generation */
     enum class LuksGeneration
     {
         Luks1,  // First generation of LUKS
@@ -125,11 +130,6 @@ public:
      */
     SwapChoice swapChoice() const { return m_swapChoice; }
 
-    /** @brief Get the variable name in global storage holding the name of bootloader
-     *
-     */
-    QString bootloaderVar() const { return m_bootloaderVar; }
-
     /** @brief Get the list of configured FS types to use with *erase* mode
      *
      * This list is not empty.
@@ -178,6 +178,16 @@ public:
     /// @brief If zfs encryption should be allowed
     bool allowZfsEncryption() const { return m_allowZfsEncryption; }
 
+    bool isLVMEnabled() const { return m_isLVMEnabled; }
+
+    /** @brief A list of names that can follow /dev/mapper/ that must not be closed
+     *
+     * These names (if any) are skipped by the ClearMountsJob.
+     * The names may contain a trailing '*' which acts as a wildcard.
+     * In any other position, '*' is interpreted literally.
+     */
+    QStringList essentialMounts() const { return m_essentialMounts; }
+
 public Q_SLOTS:
     void setInstallChoice( int );  ///< Translates a button ID or so to InstallChoice
     void setInstallChoice( InstallChoice );
@@ -185,7 +195,6 @@ public Q_SLOTS:
     void setSwapChoice( SwapChoice );
     void setEraseFsTypeChoice( const QString& filesystemName );  ///< See property eraseModeFilesystem
     void setReplaceFilesystemChoice( const QString& filesystemName );
-    void setLuksFileSystemType( const LuksGeneration );
 
 Q_SIGNALS:
     void installChoiceChanged( InstallChoice );
@@ -210,10 +219,11 @@ private:
     qreal m_requiredStorageGiB = 0.0;  // May duplicate setting in the welcome module
     QStringList m_requiredPartitionTableType;
     bool m_allowZfsEncryption = true;
-    QString m_bootloaderVar;
     bool m_allowManualPartitioning = true;
     bool m_preCheckEncryption = false;
     bool m_showNotEncryptedBootMessage = true;
+    bool m_isLVMEnabled = true;
+    QStringList m_essentialMounts;
 };
 
 /** @brief Given a set of swap choices, return a sensible value from it.

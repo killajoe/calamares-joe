@@ -99,7 +99,6 @@ mapForPartition( Partition* partition, const QString& uuid )
     {
         map[ "fs" ] = untranslatedFS( dynamic_cast< FS::luks& >( partition->fileSystem() ).innerFS() );
     }
-
     if ( partition->fileSystem().type() == FileSystem::Luks2
          && dynamic_cast< FS::luks2& >( partition->fileSystem() ).innerFS() )
     {

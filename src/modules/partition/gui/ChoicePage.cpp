@@ -34,11 +34,13 @@
 #include "Branding.h"
 #include "GlobalStorage.h"
 #include "JobQueue.h"
+#include "compat/CheckBox.h"
 #include "partition/PartitionIterator.h"
 #include "partition/PartitionQuery.h"
 #include "utils/Gui.h"
 #include "utils/Logger.h"
 #include "utils/Retranslator.h"
+#include "utils/String.h"
 #include "utils/Units.h"
 #include "widgets/PrettyRadioButton.h"
 
@@ -187,7 +189,8 @@ ChoicePage::init( PartitionCoreModule* core )
 
     connect( m_drivesCombo, qOverload< int >( &QComboBox::currentIndexChanged ), this, &ChoicePage::applyDeviceChoice );
     connect( m_encryptWidget, &EncryptWidget::stateChanged, this, &ChoicePage::onEncryptWidgetStateChanged );
-    connect( m_reuseHomeCheckBox, &QCheckBox::stateChanged, this, &ChoicePage::onHomeCheckBoxStateChanged );
+    connect(
+        m_reuseHomeCheckBox, Calamares::checkBoxStateChangedSignal, this, &ChoicePage::onHomeCheckBoxStateChanged );
 
     ChoicePage::applyDeviceChoice();
 }
@@ -352,12 +355,6 @@ ChoicePage::setupChoices()
     updateChoiceButtonsTr();
 }
 
-bool
-ChoicePage::isNewEfiSelected() const
-{
-    return m_efiComboBox && m_efiNewIndex != -1 && m_efiComboBox->currentIndex() == m_efiNewIndex;
-}
-
 /**
  * @brief ChoicePage::selectedDevice queries the device picker (which may be a combo or
  *      a list view) to get a pointer to the currently selected Device.
@@ -367,7 +364,8 @@ ChoicePage::isNewEfiSelected() const
 Device*
 ChoicePage::selectedDevice()
 {
-    Device* const currentDevice = m_core->deviceModel()->deviceForIndex( m_core->deviceModel()->index( m_drivesCombo->currentIndex() ) );
+    Device* const currentDevice
+        = m_core->deviceModel()->deviceForIndex( m_core->deviceModel()->index( m_drivesCombo->currentIndex() ) );
     return currentDevice;
 }
 
@@ -590,8 +588,21 @@ ChoicePage::applyActionChoice( InstallChoice choice )
                  &ChoicePage::doAlongsideSetupSplitter,
                  Qt::UniqueConnection );
         break;
-    case InstallChoice::NoChoice:
     case InstallChoice::Manual:
+        if ( m_core->isDirty() )
+        {
+            ScanningDialog::run(
+                QtConcurrent::run(
+                    [ = ]
+                    {
+                        QMutexLocker locker( &m_coreMutex );
+                        m_core->revertDevice( selectedDevice() );
+                    } ),
+                [] {},
+                this );
+        }
+        break;
+    case InstallChoice::NoChoice:
         break;
     }
     updateNextEnabled();
@@ -677,20 +688,15 @@ ChoicePage::onHomeCheckBoxStateChanged()
     }
 }
 
-int
-ChoicePage::efiIndex()
-{
-    if ( !m_efiComboBox )
-    {
-        return 0;
-    }
-
-    return m_efiComboBox->currentIndex();
-}
-
 void
 ChoicePage::onLeave()
 {
+    Calamares::GlobalStorage* gs = Calamares::JobQueue::instance()->globalStorage();
+    const bool useLuksPassphrase = ( m_encryptWidget->state() == EncryptWidget::Encryption::Confirmed );
+    const QString storedLuksPassphrase
+        = useLuksPassphrase ? Calamares::String::obscure( m_encryptWidget->passphrase() ) : QString();
+    gs->insert( "luksPassphrase", storedLuksPassphrase );
+
     if ( m_config->installChoice() == InstallChoice::Alongside )
     {
         if ( m_afterPartitionSplitterWidget->splitPartitionSize() >= 0
@@ -705,29 +711,22 @@ ChoicePage::onLeave()
               || m_config->installChoice() == InstallChoice::Replace ) )
     {
         QList< Partition* > efiSystemPartitions = m_core->efiSystemPartitions();
-        if ( !isNewEfiSelected() )
+        if ( efiSystemPartitions.count() == 1 )
         {
-            Partition* part = nullptr;
-            for ( auto const partition : qAsConst( efiSystemPartitions ) )
-            {
-                if ( partition->partitionPath() == m_efiComboBox->currentText() )
-                {
-                    part = partition;
-                    break;
-                }
-            }
-
-            if ( part != nullptr )
-            {
-                m_core->removeEspMounts();
-                PartitionInfo::setMountPoint(
-                    part, Calamares::JobQueue::instance()->globalStorage()->value( "efiSystemPartition" ).toString() );
-            }
-            else
-            {
-                // This should never happen
-                cError() << "No valid efi partition found matching the selected partition" << Qt::endl;
-            }
+            PartitionInfo::setMountPoint(
+                efiSystemPartitions.first(),
+                Calamares::JobQueue::instance()->globalStorage()->value( "efiSystemPartition" ).toString() );
+        }
+        else if ( efiSystemPartitions.count() > 1 && m_efiComboBox )
+        {
+            PartitionInfo::setMountPoint(
+                efiSystemPartitions.at( m_efiComboBox->currentIndex() ),
+                Calamares::JobQueue::instance()->globalStorage()->value( "efiSystemPartition" ).toString() );
+        }
+        else
+        {
+            cError() << "cannot set up EFI system partition.\nESP count:" << efiSystemPartitions.count()
+                     << "\nm_efiComboBox:" << m_efiComboBox;
         }
     }
     else  // installPath is then passed to the bootloader module for MBR setup
@@ -765,8 +764,6 @@ ChoicePage::doAlongsideApply()
     Q_ASSERT( m_afterPartitionSplitterWidget->splitPartitionSize() >= 0 );
     Q_ASSERT( m_afterPartitionSplitterWidget->newPartitionSize() >= 0 );
 
-    auto gs = Calamares::JobQueue::instance()->globalStorage();
-
     QMutexLocker locker( &m_coreMutex );
 
     QString path = m_beforePartitionBarsView->selectionModel()
@@ -787,40 +784,8 @@ ChoicePage::doAlongsideApply()
                 = firstSector + m_afterPartitionSplitterWidget->splitPartitionSize() / dev->logicalSize();
 
             m_core->resizePartition( dev, candidate, firstSector, newLastSector );
-
-            qint64 firstFreeSector = newLastSector + 2;
-
-            // Add an EFI partition if required
-            if ( PartUtils::isEfiSystem() && isNewEfiSelected() )
-            {
-                qint64 uefisys_part_sizeB = PartUtils::efiFilesystemRecommendedSize();
-                qint64 efiSectorCount = Calamares::bytesToSectors( uefisys_part_sizeB, dev->logicalSize() );
-                Q_ASSERT( efiSectorCount > 0 );
-
-                // Since sectors count from 0, and this partition is created starting
-                // at firstFreeSector, we need efiSectorCount sectors, numbered
-                // firstFreeSector..firstFreeSector+efiSectorCount-1.
-                qint64 lastSector = firstFreeSector + efiSectorCount - 1;
-                Partition* efiPartition = KPMHelpers::createNewPartition( dev->partitionTable(),
-                                                                          *dev,
-                                                                          PartitionRole( PartitionRole::Primary ),
-                                                                          FileSystem::Fat32,
-                                                                          QString(),
-                                                                          firstFreeSector,
-                                                                          lastSector,
-                                                                          KPM_PARTITION_FLAG( None ) );
-                PartitionInfo::setFormat( efiPartition, true );
-                m_core->removeEspMounts();
-                PartitionInfo::setMountPoint( efiPartition, gs->value( "efiSystemPartition" ).toString() );
-                if ( gs->contains( "efiSystemPartitionName" ) )
-                {
-                    efiPartition->setLabel( gs->value( "efiSystemPartitionName" ).toString() );
-                }
-                m_core->createPartition( dev, efiPartition, KPM_PARTITION_FLAG_ESP );
-                firstFreeSector = lastSector + 1;
-            }
             m_core->layoutApply( dev,
-                                 firstFreeSector,
+                                 newLastSector + 2,
                                  oldLastSector,
                                  m_config->luksFileSystemType(),
                                  m_encryptWidget->passphrase(),
@@ -870,13 +835,6 @@ ChoicePage::doReplaceSelectedPartition( const QModelIndex& current )
                     m_core->revertDevice( selectedDevice() );
                 }
 
-                if ( m_isEfi && m_efiComboBox->count() == 0 )
-                {
-                    m_inOnReplace = true;
-                    setupEfiSystemPartitionSelector();
-                    m_inOnReplace = false;
-                }
-
                 // if the partition is unallocated(free space), we don't replace it but create new one
                 // with the same first and last sector
                 Partition* selectedPartition
@@ -886,9 +844,6 @@ ChoicePage::doReplaceSelectedPartition( const QModelIndex& current )
                     //NOTE: if the selected partition is free space, we don't deal with
                     //      a separate /home partition at all because there's no existing
                     //      rootfs to read it from.
-
-                    Calamares::GlobalStorage* gs = Calamares::JobQueue::instance()->globalStorage();
-
                     PartitionRole newRoles = PartitionRole( PartitionRole::Primary );
                     PartitionNode* newParent = selectedDevice()->partitionTable();
 
@@ -902,38 +857,8 @@ ChoicePage::doReplaceSelectedPartition( const QModelIndex& current )
                         }
                     }
 
-                    auto dev = selectedDevice();
-                    qint64 newFirstSector = selectedPartition->firstSector();
-                    if ( isNewEfiSelected() && PartUtils::isEfiSystem() )
-                    {
-                        qint64 uefisys_part_sizeB = PartUtils::efiFilesystemRecommendedSize();
-                        qint64 efiSectorCount = Calamares::bytesToSectors( uefisys_part_sizeB, dev->logicalSize() );
-                        Q_ASSERT( efiSectorCount > 0 );
-
-                        // Since sectors count from 0, and this partition is created starting
-                        // at firstFreeSector, we need efiSectorCount sectors, numbered
-                        // firstFreeSector..firstFreeSector+efiSectorCount-1.
-                        qint64 lastSector = newFirstSector + efiSectorCount - 1;
-                        Partition* efiPartition
-                            = KPMHelpers::createNewPartition( dev->partitionTable(),
-                                                              *dev,
-                                                              PartitionRole( PartitionRole::Primary ),
-                                                              FileSystem::Fat32,
-                                                              QString(),
-                                                              newFirstSector,
-                                                              lastSector,
-                                                              KPM_PARTITION_FLAG( None ) );
-                        PartitionInfo::setFormat( efiPartition, true );
-                        PartitionInfo::setMountPoint( efiPartition, gs->value( "efiSystemPartition" ).toString() );
-                        if ( gs->contains( "efiSystemPartitionName" ) )
-                        {
-                            efiPartition->setLabel( gs->value( "efiSystemPartitionName" ).toString() );
-                        }
-                        m_core->createPartition( dev, efiPartition, KPM_PARTITION_FLAG_ESP );
-                        newFirstSector = lastSector + 1;
-                    }
-                    m_core->layoutApply( dev,
-                                         newFirstSector,
+                    m_core->layoutApply( selectedDevice(),
+                                         selectedPartition->firstSector(),
                                          selectedPartition->lastSector(),
                                          m_config->luksFileSystemType(),
                                          m_encryptWidget->passphrase(),
@@ -971,8 +896,7 @@ ChoicePage::doReplaceSelectedPartition( const QModelIndex& current )
                                                               { gs->value( "defaultPartitionType" ).toString(),
                                                                 m_config->replaceModeFilesystem(),
                                                                 m_config->luksFileSystemType(),
-                                                                m_encryptWidget->passphrase(),
-                                                                isNewEfiSelected() } );
+                                                                m_encryptWidget->passphrase() } );
                         Partition* homePartition = findPartitionByPath( { selectedDevice() }, *homePartitionPath );
 
                         if ( homePartition && doReuseHomePartition )
@@ -1003,6 +927,7 @@ ChoicePage::doReplaceSelectedPartition( const QModelIndex& current )
             {
                 setupEfiSystemPartitionSelector();
             }
+
             updateNextEnabled();
             if ( !m_bootloaderComboBox.isNull() && m_bootloaderComboBox->currentIndex() < 0 )
             {
@@ -1129,9 +1054,10 @@ ChoicePage::updateActionChoicePreview( InstallChoice choice )
         if ( m_enableEncryptionWidget )
         {
             m_encryptWidget->show();
-            if ( m_config->preCheckEncryption() )
+            if ( m_config->preCheckEncryption() && !m_preCheckActivated )
             {
                 m_encryptWidget->setEncryptionCheckbox( true );
+                m_preCheckActivated = true;
             }
         }
         m_previewBeforeLabel->setText( tr( "Current:", "@label" ) );
@@ -1188,9 +1114,10 @@ ChoicePage::updateActionChoicePreview( InstallChoice choice )
         if ( shouldShowEncryptWidget( choice ) )
         {
             m_encryptWidget->show();
-            if ( m_config->preCheckEncryption() )
+            if ( m_config->preCheckEncryption() && !m_preCheckActivated )
             {
                 m_encryptWidget->setEncryptionCheckbox( true );
+                m_preCheckActivated = true;
             }
         }
         m_previewBeforeLabel->setText( tr( "Current:", "@label" ) );
@@ -1264,7 +1191,6 @@ ChoicePage::updateActionChoicePreview( InstallChoice choice )
         efiLayout->addWidget( m_efiComboBox );
         m_efiLabel->setBuddy( m_efiComboBox );
         m_efiComboBox->hide();
-        connect( m_efiComboBox, &QComboBox::currentTextChanged, this, &ChoicePage::onEficomboTextChanged );
         efiLayout->addStretch();
     }
 
@@ -1293,58 +1219,41 @@ ChoicePage::setupEfiSystemPartitionSelector()
 {
     Q_ASSERT( m_isEfi );
 
-    // Ensure the EFI selector is not already configured
-    if ( m_efiComboBox->count() > 0 )
-    {
-        return;
-    }
-
-    auto gs = Calamares::JobQueue::instance()->globalStorage();
-
-    m_efiNewIndex = -1;
-
     // Only the already existing ones:
     QList< Partition* > efiSystemPartitions = m_core->efiSystemPartitions();
 
-     m_efiLabel->setText( tr( "EFI system partition:", "@label" ) );
-    for ( int i = 0; i < efiSystemPartitions.count(); ++i )
+    if ( efiSystemPartitions.count() == 0 )  //should never happen
     {
-        Partition* efiPartition = efiSystemPartitions.at( i );
-        if ( gs->contains( "curBootloader" )
-             && gs->value( "curBootloader" ).toString().trimmed() == QStringLiteral( "systemd-boot" ) )
+        m_efiLabel->setText( tr( "An EFI system partition cannot be found anywhere "
+                                 "on this system. Please go back and use manual "
+                                 "partitioning to set up %1.",
+                                 "@info, %1 is product name" )
+                                 .arg( Calamares::Branding::instance()->shortProductName() ) );
+        updateNextEnabled();
+    }
+    else if ( efiSystemPartitions.count() == 1 )  //probably most usual situation
+    {
+        m_efiLabel->setText( tr( "The EFI system partition at %1 will be used for "
+                                 "starting %2.",
+                                 "@info, %1 is partition path, %2 is product name" )
+                                 .arg( efiSystemPartitions.first()->partitionPath() )
+                                 .arg( Calamares::Branding::instance()->shortProductName() ) );
+    }
+    else
+    {
+        m_efiComboBox->show();
+        m_efiLabel->setText( tr( "EFI system partition:", "@label" ) );
+        for ( int i = 0; i < efiSystemPartitions.count(); ++i )
         {
-            if ( efiPartition->capacity() < PartUtils::efiFilesystemMinimumSize() )
+            Partition* efiPartition = efiSystemPartitions.at( i );
+            m_efiComboBox->addItem( efiPartition->partitionPath(), i );
+
+            // We pick an ESP on the currently selected device, if possible
+            if ( efiPartition->devicePath() == selectedDevice()->deviceNode() && efiPartition->number() == 1 )
             {
-                continue;
+                m_efiComboBox->setCurrentIndex( i );
             }
         }
-
-        m_efiComboBox->addItem( efiPartition->partitionPath() );
-
-        // We pick an ESP on the currently selected device, if possible
-        if ( efiPartition->devicePath() == selectedDevice()->deviceNode() && m_efiComboBox->currentIndex() < 0 )
-        {
-            m_efiComboBox->setCurrentIndex( m_efiComboBox->findText( efiPartition->partitionPath() ) );
-        }
-    }
-    m_efiComboBox->addItem( tr( "New" ) );
-    m_efiNewIndex = m_efiComboBox->count() - 1;
-
-    m_efiComboBox->show();
-
-    // Ensure the combobox has something selected
-    if ( m_efiComboBox->currentIndex() < 0 )
-    {
-        m_efiComboBox->setCurrentIndex( 0 );
-    }
-}
-
-void
-ChoicePage::onEficomboTextChanged( const QString& text )
-{
-    if ( m_config->installChoice() == InstallChoice::Replace && !m_inOnReplace )
-    {
-        doReplaceSelectedPartition( m_beforePartitionBarsView->selectionModel()->currentIndex() );
     }
 }
 
@@ -1818,29 +1727,6 @@ ChoicePage::shouldShowEncryptWidget( Config::InstallChoice choice ) const
 }
 
 void
-ChoicePage::reset()
-{
-    m_grp->setExclusive( false );
-    if ( m_alongsideButton->isChecked() )
-    {
-        m_alongsideButton->setChecked( false );
-    }
-    if ( m_eraseButton->isChecked() )
-    {
-        m_eraseButton->setChecked( false );
-    }
-    if ( m_replaceButton->isChecked() )
-    {
-        m_replaceButton->setChecked( false );
-    }
-    if ( m_somethingElseButton->isChecked() )
-    {
-        m_somethingElseButton->setChecked( false );
-    }
-    m_grp->setExclusive( true );
-}
-
-void
 ChoicePage::updateActionDescriptionsTr()
 {
     if ( m_osproberEntriesCount == 0 )
@@ -1925,7 +1811,8 @@ ChoicePage::updateActionDescriptionsTr()
                                     "currently present on the selected storage device." ) );
 
         m_replaceButton->setText( tr( "<strong>Replace a partition</strong><br/>"
-                                      "Replaces a partition with %1." ) );
+                                      "Replaces a partition with %1." )
+                                      .arg( Calamares::Branding::instance()->shortVersionedName() ) );
     }
     if ( m_osproberEntriesCount < 0 )
     {
