@@ -212,6 +212,7 @@ Retranslator::Retranslator( QObject* parent )
 bool
 Retranslator::eventFilter( QObject* obj, QEvent* e )
 {
+    cDebug() << "Retranslator::eventFilter sees event type" << int( e->type() ) << "on" << obj;
     if ( e->type() == QEvent::LanguageChange )
     {
         emit languageChanged();
