@@ -79,8 +79,7 @@ QmlViewStep::QmlViewStep( QObject* parent )
     m_qmlWidget->setSizePolicy( QSizePolicy::Expanding, QSizePolicy::Expanding );
     m_qmlEngine = m_qmlWidget->engine();
 
-    CALAMARES_RETRANSLATE( cDebug() << "QmlViewStep RETRANSLATE lambda fired for" << moduleInstanceKey().toString();
-        if ( m_qmlEngine ) { m_qmlEngine->retranslate(); } );
+    CALAMARES_RETRANSLATE( if ( m_qmlEngine ) { m_qmlEngine->retranslate(); } );
 
     QVBoxLayout* layout = new QVBoxLayout( m_widget );
     layout->addWidget( m_spinner );
