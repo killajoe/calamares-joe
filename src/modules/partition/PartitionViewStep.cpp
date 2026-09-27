@@ -682,6 +682,47 @@ checkForFilesystemConflicts( PartitionCoreModule* core )
 void
 PartitionViewStep::onLeave()
 {
+    auto* gs = Calamares::JobQueue::instance()->globalStorage();
+
+    // Put the ESPs in global storage (EOS patch, needed by windowsbootentry)
+    if ( PartUtils::isEfiSystem() )
+    {
+        QStringList espPaths;
+        for ( auto* partition : m_core->efiSystemPartitions() )
+        {
+            if ( !partition->partitionPath().trimmed().isEmpty() )
+            {
+                espPaths.append( partition->partitionPath() );
+            }
+        }
+        gs->insert( "espList", espPaths );
+    }
+
+    // Check the size of the ESP for systemd-boot
+    if ( PartUtils::isEfiSystem()
+         && gs->value( "packagechooser_packagechooserq" ).toString().trimmed() == "systemd-boot" )
+    {
+        const QString espMountPoint = gs->value( "efiSystemPartition" ).toString();
+        Partition* esp = m_core->findPartitionByMountPoint( espMountPoint );
+
+        qint64 minEspSize = gs->value( "efiSystemPartitionMinSize_i" ).toLongLong();
+        if ( esp != nullptr && esp->capacity() < minEspSize )
+        {
+            QString minSizeString = gs->value( "efiSystemPartitionMinSize" ).toString();
+
+            QString message = tr( "EFI partition too small" );
+            QString description = tr( "The size of the EFI partition is smaller than recommended "
+                                      "for systemd-boot.  If you proceed with this partition size, "
+                                      "the installation may fail or the system may not boot.  "
+                                      "The recommended minimum size is %1" )
+                                      .arg( minSizeString );
+
+            QMessageBox mb( QMessageBox::Warning, message, description, QMessageBox::Ok, m_choicePage );
+            Calamares::fixButtonLabels( &mb );
+            mb.exec();
+        }
+    }
+
     if ( m_widget->currentWidget() == m_choicePage )
     {
         m_choicePage->onLeave();

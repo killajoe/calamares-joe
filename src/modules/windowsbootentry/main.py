@@ -49,24 +49,23 @@ def handle_systemdboot(efi_directory):
     """
 
     # Get the root mount point and build the full path to the mounted ESP
-    try:
-        installation_root_path = libcalamares.globalstorage.value("rootMountPoint")
-    except KeyError:
+    installation_root_path = libcalamares.globalstorage.value("rootMountPoint")
+    if not installation_root_path:
         libcalamares.utils.warning('Global storage value "rootMountPoint" missing')
+        return None
 
     install_efi_directory = installation_root_path + efi_directory
 
     # espList holds the list of EFI partitions from the partition module
-    try:
-        efi_partition_list = libcalamares.globalstorage.value("espList")
-    except KeyError:
-        libcalamares.utils.warning("No ESP list in global storage")
+    # (globalstorage.value() returns None, it does not raise KeyError)
+    efi_partition_list = libcalamares.globalstorage.value("espList") or []
+    if not efi_partition_list:
+        libcalamares.utils.warning("No ESP list in global storage, skipping Windows boot entry handling")
         return None
 
     # Get the partitions from global storage
-    try:
-        partitions = libcalamares.globalstorage.value("partitions")
-    except KeyError:
+    partitions = libcalamares.globalstorage.value("partitions") or []
+    if not partitions:
         libcalamares.utils.warning("partitions missing from global storage")
         return None
 
