@@ -172,4 +172,33 @@ def run():
                 edl.write("{!s}={!s}\n".format(k, v))
         libcalamares.utils.debug('{!s} done'.format(target_etc_default_path))
 
+    # Keep /etc/vconsole.conf consistent with the X11 keyboard setup.
+    # Without XKBLAYOUT & co. in vconsole.conf, systemd-localed converts the
+    # X11 layout back to a console keymap using its own kbd-model-map and may
+    # rewrite KEYMAP= (e.g. de-latin1 -> de). Copying the XKB values over
+    # makes vconsole.conf and the X11 config consistent, so localed leaves
+    # KEYMAP= alone.
+    sync_xkb_script = r"""
+X11_CONF=/etc/X11/xorg.conf.d/00-keyboard.conf
+VCON_CONF=/etc/vconsole.conf
+if [ -f "$X11_CONF" ] && [ -f "$VCON_CONF" ]; then
+    sed -i '/^XKBLAYOUT=/d; /^XKBMODEL=/d; /^XKBVARIANT=/d; /^XKBOPTIONS=/d' "$VCON_CONF"
+    sed -n 's/.*Option *"XkbLayout" *"\([^"]*\)".*/XKBLAYOUT=\1/p' "$X11_CONF" >> "$VCON_CONF"
+    sed -n 's/.*Option *"XkbModel" *"\([^"]*\)".*/XKBMODEL=\1/p' "$X11_CONF" >> "$VCON_CONF"
+    sed -n 's/.*Option *"XkbVariant" *"\([^"]*\)".*/XKBVARIANT=\1/p' "$X11_CONF" >> "$VCON_CONF"
+    sed -n 's/.*Option *"XkbOptions" *"\([^"]*\)".*/XKBOPTIONS=\1/p' "$X11_CONF" >> "$VCON_CONF"
+fi
+"""
+    try:
+        rc = libcalamares.utils.target_env_call(["sh", "-c", sync_xkb_script])
+        if rc != 0:
+            libcalamares.utils.warning(
+                "localecfg: syncing XKB keys into vconsole.conf failed")
+        else:
+            libcalamares.utils.debug(
+                "localecfg: synced XKB keys into vconsole.conf")
+    except Exception as e:
+        libcalamares.utils.warning(
+            "localecfg: could not sync XKB keys into vconsole.conf: {!s}".format(e))
+
     return None
