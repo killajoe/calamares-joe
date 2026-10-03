@@ -911,11 +911,26 @@ class DMgreetd(DisplayManager):
     def greeter_setup(self):
         pass
 
+    def cosmic_greeter_setup(self):
+        # cosmic-greeter runs its greeter session as a dedicated system
+        # user 'cosmic-greeter'; the Arch package does not create it.
+        if libcalamares.utils.target_env_call(
+                ['getent', 'passwd', 'cosmic-greeter']) != 0:
+            libcalamares.utils.target_env_call(
+                ['useradd', '-c', '"COSMIC Greeter"', '-r',
+                    '-s', '/usr/bin/nologin', 'cosmic-greeter'])
+
     def set_autologin(self, username, do_autologin, default_desktop_environment):
         self.config_load()
 
         de_command = default_desktop_environment.executable if default_desktop_environment else None
-        if os.path.exists(self.os_path("usr/bin/gtkgreet")) and os.path.exists(self.os_path("usr/bin/cage")):
+        if os.path.exists(self.os_path("usr/bin/cosmic-greeter")):
+            # cosmic-greeter ships its own default session command and
+            # expects the 'cosmic-greeter' system user (see above).
+            self.cosmic_greeter_setup()
+            self.config_data['default_session']['command'] = "cosmic-greeter-start"
+            self.config_data['default_session']['user'] = "cosmic-greeter"
+        elif os.path.exists(self.os_path("usr/bin/gtkgreet")) and os.path.exists(self.os_path("usr/bin/cage")):
             self.config_data['default_session']['command'] = "cage -d -s -- gtkgreet"
             if self.greeter_css_location:
                 self.config_data['default_session']['command'] += f" -s {self.greeter_css_location}"
